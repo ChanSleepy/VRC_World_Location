@@ -1,6 +1,6 @@
-# VRChat World Logger with System Performance Monitor
-# ---------------------------------------------------
-# Monitors VRChat logs and logs CPU/RAM usage periodically.
+# VRChat World Logger with Enhanced Execution Policy Check
+# This script continuously monitors the VRChat log file to extract the current world name and instance type.
+# It first checks if the execution policy is set to 'RemoteSigned' to prevent errors.
 
 # --- Execution Policy Check ---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -107,3 +107,4 @@ while ($true) {
 
     Start-Sleep -Seconds 15
 }
+
