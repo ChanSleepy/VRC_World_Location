@@ -2,6 +2,7 @@
 # This script continuously monitors the VRChat log file to extract the current world name and instance type.
 # It first checks if the execution policy is set to 'RemoteSigned' to prevent errors.
 
+# Check if the current session is running as Administrator.
 # --- Execution Policy Check ---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -33,7 +34,7 @@ if ($currentPolicy -ne 'RemoteSigned') {
 
 Write-Host "Execution Policy check passed. Starting the VRChat World Logger..." -ForegroundColor Green
 
-# --- VRChat Log Monitoring ---
+# --- VRChat Log Monitoring and System Performance Loop ---
 while ($true) {
     # --- VRChat World Info ---
     $logDirectory = "$env:USERPROFILE\AppData\LocalLow\VRChat\VRChat"
@@ -44,11 +45,23 @@ while ($true) {
         # Dynamically choose how many lines to read based on log size
         $fileSizeMB = [math]::Round((Get-Item $latestLogFile.FullName).Length / 1MB, 2)
 
-        if ($fileSizeMB -gt 100) {
-            $tailCount = 5000
+        if ($fileSizeMB -gt 500) {
+            $tailCount = 3000
+        }
+        elseif ($fileSizeMB -gt 300) {
+            $tailCount = 4000
+        }
+        elseif ($fileSizeMB -gt 200) {
+            $tailCount = 6000
+        }
+        elseif ($fileSizeMB -gt 120) {
+            $tailCount = 8000
+        }
+        elseif ($fileSizeMB -gt 100) {
+            $tailCount = 9000
         }
         elseif ($fileSizeMB -gt 50) {
-            $tailCount = 10000
+            $tailCount = 12000
         }
         elseif ($fileSizeMB -gt 10) {
             $tailCount = 20000
@@ -105,6 +118,6 @@ while ($true) {
         Write-Output "No VRChat log files found at '$logDirectory'. Waiting 15 seconds..."
     }
 
+    # Wait before next check
     Start-Sleep -Seconds 15
 }
-
