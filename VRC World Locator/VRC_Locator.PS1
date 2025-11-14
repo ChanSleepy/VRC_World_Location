@@ -34,7 +34,7 @@ if ($currentPolicy -ne 'RemoteSigned') {
 
 Write-Host "Execution Policy check passed. Starting the VRChat World Logger..." -ForegroundColor Green
 
-# --- VRChat Log Monitoring and System Performance Loop ---
+# --- VRChat Log Monitoring ---
 while ($true) {
     # --- VRChat World Info ---
     $logDirectory = "$env:USERPROFILE\AppData\LocalLow\VRChat\VRChat"
@@ -121,3 +121,4 @@ while ($true) {
     # Wait before next check
     Start-Sleep -Seconds 15
 }
+
