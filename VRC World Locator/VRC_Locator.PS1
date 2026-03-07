@@ -2,138 +2,220 @@
 # This script continuously monitors the VRChat log file to extract the current world name and instance type.
 # It first checks if the execution policy is set to 'RemoteSigned' to prevent errors.
 
-# --- Execution Policy Check ---
 # Check if the current session is running as Administrator.
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# ---------------------------------------------------------------------
+
+# --- Execution Policy Check---
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
 $currentPolicy = Get-ExecutionPolicy -Scope LocalMachine
 Write-Host "Current Execution Policy for LocalMachine is: $currentPolicy"
 
-# If the policy is not 'RemoteSigned', handle the situation based on admin privileges.
 if ($currentPolicy -ne 'RemoteSigned') {
     if ($isAdmin) {
-        # If the user is an admin, prompt to set the policy automatically.
-        $choice = Read-Host "Execution policy 'RemoteSigned' is required. Would you like to set it now? (Y/N)"
-        if ($choice -eq 'y' -or $choice -eq 'Y') {
+        $choice = Read-Host "Execution policy 'RemoteSigned' is required. Set now? (Y/N)"
+        if ($choice -match '^[Yy]$') {
             Write-Host "Setting Execution Policy to 'RemoteSigned'..." -ForegroundColor Cyan
             Set-ExecutionPolicy RemoteSigned -Scope LocalMachine -Force | Out-Null
             Write-Host "Execution Policy set successfully." -ForegroundColor Green
-        } else {
-            Write-Host "Execution Policy was not changed. The script cannot proceed." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Execution Policy was not changed. Exiting..." -ForegroundColor Yellow
             Read-Host "Press Enter to exit..."
             exit
         }
-    } else {
-        # If the user is not an admin, provide instructions and exit with a pause.
-        Write-Host "Execution policy 'RemoteSigned' is required to run this script." -ForegroundColor Yellow
-        Write-Host "Please open PowerShell as an Administrator and run this script again to set the policy." -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Run PowerShell as Administrator to set execution policy." -ForegroundColor Yellow
         Read-Host "Press Enter to exit..."
-        # Exit the script to prevent it from running with an incorrect policy.
         exit
     }
 }
 
-Write-Host "Execution Policy check passed. Starting the VRChat World Logger..." -ForegroundColor Green
+Write-Host "Execution Policy OK. Starting real-time logger..." -ForegroundColor Green
+
+# --- Setup Variables ---
+$logDirectory = "$env:USERPROFILE\AppData\LocalLow\VRChat\VRChat"
+$worldOutputFile = "VRChat_Current_World.txt"
+$perfLogFile = "System_Performance_Log.txt"
+$perfCounter = 0
+$checkIntervalSeconds = 2
 
 # --- VRChat Log Monitoring Loop ---
-# This is a perpetual loop that runs every 15 seconds.
 while ($true) {
 
-    # Define the VRChat log directory path using the correct "LocalLow" directory.
-    $logDirectory = "$env:USERPROFILE\AppData\LocalLow\VRChat\VRChat"
+    # Find the latest log file on every iteration in case VRChat restarts
+    $latestLogFile = Get-ChildItem -Path $logDirectory -Filter "output_log_*.txt" |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-    # Define the output file path.
-    $outputFile = "VRChat_Current_World.txt"
+    if ($latestLogFile) {
 
-    # Get the most recent log file.
-    $latestLogFile = Get-ChildItem -Path $logDirectory -Filter "output_log_*.txt" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        # --- SMART LINE TAILING ---
+        $fileSizeMB = [math]::Round((Get-Item $latestLogFile.FullName).Length / 1MB, 1)
 
-    # Check if a log file was found.
-    if ($null -eq $latestLogFile) {
-        Write-Output "No VRChat log files found at '$logDirectory'. Waiting 15 seconds before checking again..."
-    } else {
-        # Read the last 10000 lines of the log file for efficiency.
-        $logContent = Get-Content -Path $latestLogFile.FullName -Tail 10000
+        switch ($fileSizeMB) {
+            { $_ -gt 800 } { $tailCount = 15000; break }
+            { $_ -gt 600 } { $tailCount = 20000; break }
+            { $_ -gt 400 } { $tailCount = 30000; break }
+            { $_ -gt 250 } { $tailCount = 40000; break }
+            { $_ -gt 150 } { $tailCount = 50000; break }
+            { $_ -gt 80 }  { $tailCount = 75000; break }
+            { $_ -gt 50 }  { $tailCount = 100000; break }
+            default         { $tailCount = 150000 }
+        }
 
-        # Find the latest "Joining or Creating Room" entry for the world name.
-        $roomEntry = $logContent | Select-String -Pattern "\[Behaviour\] Joining or Creating Room: " | Select-Object -Last 1
-        
-        # Find the latest "Destination fetching" entry for the instance type and ID.
-        $destinationEntry = $logContent | Select-String -Pattern "\[Behaviour\] Destination fetching: " | Select-Object -Last 1
+        Write-Host "Reading last $tailCount lines (log size: $fileSizeMB MB)" -ForegroundColor DarkGray
 
-        if ($null -ne $destinationEntry -and $null -ne $roomEntry) {
-            # Extract the world name using a regular expression.
+        $logContent = Get-Content -Path $latestLogFile.FullName -Tail $tailCount -ErrorAction SilentlyContinue
+
+        # --- MULTI-PATTERN SEARCH ---
+        $roomEntry = $logContent | Select-String -Pattern "Joining or Creating Room:" | Select-Object -Last 1
+        $destinationEntry = $logContent | Select-String -Pattern "Destination fetching:" | Select-Object -Last 1
+
+        if (-not $roomEntry) {
+            $roomEntry = $logContent | Select-String -Pattern "Entering Room:" | Select-Object -Last 1
+        }
+
+        if ($roomEntry -and $destinationEntry) {
+
+            # --- Extract World Name ---
             $worldName = "Unknown World"
-            if ($roomEntry.ToString() -match '\[Behaviour\] Joining or Creating Room: (.*)') {
+
+            if ($roomEntry.ToString() -match 'Room:\s(.+)$') {
                 $worldName = $matches[1].Trim()
             }
 
-            # Extract the full destination URL from the log entry.
+            # --- Parse Instance String ---
             $destinationInfo = $destinationEntry.ToString()
+
             $instanceType = "Public"
             $groupId = ""
             $ageGate = ""
 
-            # Check for a group instance and extract the ID and type.
             if ($destinationInfo -match 'group\((grp_[a-zA-Z0-9-]+)\)') {
                 $groupId = $matches[1]
-                # Check for the specific group access type.
-                if ($destinationInfo -match 'groupAccessType\(public\)') {
-                    $instanceType = "Group Public"
-                } elseif ($destinationInfo -match 'groupAccessType\(plus\)') {
-                    $instanceType = "Group Plus"
-                } elseif ($destinationInfo -match 'groupAccessType\(members\)') {
-                    $instanceType = "Group Members"
-                } else {
-                    $instanceType = "Group" # Default to 'Group' if type is not specified.
-                }
-            }
-            # Check for other common instance types, including the "hidden" Friends+ type.
-            elseif ($destinationInfo -match 'friends\+') {
-                $instanceType = "Friends+"
-            }
-            elseif ($destinationInfo -match '~hidden') {
-                $instanceType = "Friends+"
-            }
-            elseif ($destinationInfo -match 'friends') {
-                $instanceType = "Friends"
-            }
-            elseif ($destinationInfo -match 'invite\+') {
-                $instanceType = "Invite+"
-            }
-            elseif ($destinationInfo -match '~canRequestInvite') {
-                $instanceType = "Invite+"
-            }
-            elseif ($destinationInfo -match 'private') {
-                $instanceType = "Invite"
-            }
-            
-            # Check for an age-gated instance.
-            if ($destinationInfo -match '~ageGate') {
-                $ageGate = " 18+"
-            }
 
-            # Create a clean output string.
+                if ($destinationInfo -match 'groupAccessType\(public\)')   { $instanceType = "Group Public" }
+                elseif ($destinationInfo -match 'groupAccessType\(plus\)')  { $instanceType = "Group Plus" }
+                elseif ($destinationInfo -match 'groupAccessType\(members\)') { $instanceType = "Group Members" }
+                else { $instanceType = "Group" }
+            }
+            elseif ($destinationInfo -match 'friends\+') { $instanceType = "Friends+" }
+            elseif ($destinationInfo -match '~hidden')   { $instanceType = "Friends+" }
+            elseif ($destinationInfo -match 'friends')   { $instanceType = "Friends" }
+            elseif ($destinationInfo -match 'invite\+')  { $instanceType = "Invite+" }
+            elseif ($destinationInfo -match 'private')   { $instanceType = "Invite" }
+
+            if ($destinationInfo -match '~ageGate') { $ageGate = " 18+" }
+
+            # --- Format output ---
             $outputString = "$worldName`n($instanceType$ageGate"
-            if ($groupId) {
-                $outputString += ", $groupId)"
-            } else {
-                $outputString += ")"
-            }
+            if ($groupId) { $outputString += ", $groupId)" } else { $outputString += ")" }
 
-            # Check if the output has changed before writing to avoid excessive file updates.
-            $currentOutputInFile = Get-Content -Path $outputFile -ErrorAction SilentlyContinue
-            if ($currentOutputInFile -ne $outputString) {
-                Set-Content -Path $outputFile -Value $outputString
-                Write-Host "New world information found and saved to '$outputFile'."
-                Write-Host "Output:"
-                Write-Host $outputString
+            # --- Write only if changed ---
+            $existing = Get-Content -Path $worldOutputFile -ErrorAction SilentlyContinue
+
+            if ($existing -ne $outputString) {
+                Set-Content -Path $worldOutputFile -Value $outputString -Force
+                Write-Host "--- World Updated ($fileSizeMB MB Log Size) ---" -ForegroundColor Yellow
+                Write-Host $outputString -ForegroundColor Cyan
+                Write-Host "---------------------------------------------------" -ForegroundColor Yellow
             }
-        } else {
-            # If no world entries are found, it's likely a fresh log file.
-            Write-Output "No world name or instance entry found in the latest log file. Waiting for new entries..."
         }
     }
+    else {
+        Write-Host "VRChat log file not found. Is VRChat running?" -ForegroundColor Red
+    }
 
-    # Pause the script for 15 seconds before the next loop iteration.
-    Start-Sleep -Seconds 15
+    # --- System Performance Logging (every 1 cycle) ---
+    if ($perfCounter -ge 1) {
+
+        $cpuUsage = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+        $totalMem = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB
+        $freeMem = (Get-Counter '\Memory\Available MBytes').CounterSamples.CookedValue
+        $usedMem = [math]::Round($totalMem - $freeMem, 1)
+        $cpuPercent = [math]::Round($cpuUsage, 1)
+        $usedPercent = [math]::Round(($usedMem / $totalMem) * 100, 1)
+
+        # --- GPU VRAM (Nvidia / AMD / Intel) ---
+        $gpuMemoryLine = ""
+        try {
+            # --- Nvidia ---
+            $nvidiaSmi = Get-Command "nvidia-smi" -ErrorAction SilentlyContinue
+            if ($nvidiaSmi) {
+                $smiOutput = & nvidia-smi
+                $memLine = $smiOutput | Select-String -Pattern '(\d+)MiB\s*/\s*(\d+)MiB'
+                if ($memLine) {
+                    $vramUsed    = [int]$memLine.Matches[0].Groups[1].Value
+                    $vramTotal   = [int]$memLine.Matches[0].Groups[2].Value
+                    $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
+                    $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
+                }
+                else {
+                    $gpuMemoryLine = " | VRAM: parse failed"
+                }
+            }
+            # --- AMD / Intel (via WMI) ---
+            else {
+                $gpuInfo = Get-CimInstance -ClassName Win32_VideoController | Select-Object -First 1
+                if ($gpuInfo) {
+                    $vramTotal   = [math]::Round($gpuInfo.AdapterRAM / 1MB, 0)
+
+                    # Dedicated VRAM used via counter (AMD/Intel support varies)
+                    $vramUsedRaw = (Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction SilentlyContinue)
+                    if ($vramUsedRaw) {
+                        $vramUsed    = [math]::Round(($vramUsedRaw.CounterSamples | Measure-Object CookedValue -Sum).Sum / 1MB, 0)
+                        $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
+                        $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
+                    }
+                    else {
+                        # Fallback: total VRAM only, usage not available
+                        $gpuMemoryLine = " | VRAM: ? MB / $vramTotal MB (usage N/A)"
+                    }
+                }
+                else {
+                    $gpuMemoryLine = " | VRAM: No GPU detected"
+                }
+            }
+        }
+        catch {
+            $gpuMemoryLine = " | VRAM: ERROR - $($_.Exception.Message)"
+        }
+
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $perfLine = "$timestamp | CPU: $cpuPercent% | RAM: $usedMem MB / $([math]::Round($totalMem,0)) MB ($usedPercent%)$gpuMemoryLine"
+
+        # --- Write with retry to avoid file lock conflicts with browser ---
+        $maxRetries = 5
+        $retryCount = 0
+        $written = $false
+
+        while (-not $written -and $retryCount -lt $maxRetries) {
+            try {
+                Add-Content -Path $perfLogFile -Value $perfLine -ErrorAction Stop
+                $written = $true
+            }
+            catch [System.IO.IOException] {
+                $retryCount++
+                Write-Host "File locked, retrying ($retryCount/$maxRetries)..." -ForegroundColor DarkYellow
+                Start-Sleep -Milliseconds 200
+            }
+        }
+
+        if (-not $written) {
+            Write-Host "WARN: Could not write perf log after $maxRetries retries." -ForegroundColor Red
+        }
+        else {
+            Write-Host "PERF LOGGED: $perfLine" -ForegroundColor Green
+        }
+
+        $perfCounter = 0
+    }
+    else {
+        $perfCounter++
+    }
+
+    # --- Pause for real-time responsiveness ---
+    Start-Sleep -Seconds $checkIntervalSeconds
 }

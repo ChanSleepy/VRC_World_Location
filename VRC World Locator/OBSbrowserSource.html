@@ -1,26 +1,37 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>OBS Text Source</title>
     <style>
         body {
             margin: 0;
             padding: 0;
-            color: white; /* Customize text color */
+            color: white;
+            /* Customize text color */
             font-family: Arial, sans-serif;
             font-size: 24px;
             /* Add any other styling you need */
         }
     </style>
 </head>
+
 <body>
 
     <div id="dynamicText">Loading...</div>
+    <div id="dynamicText2nd">Loading...</div>
 
     <script>
         // Replace 'mytextfile.txt' with the actual name of your file.
         const filePath = 'VRChat_Current_World.txt';
+        const filePath2nd = 'System_Performance_Log.txt';
         let lastContent = '';
+        let lastContent2nd = '';
+
+        function getLastLine(text) {
+            const lines = text.trimEnd().split('\n');
+            return lines[lines.length - 1].trim();
+        }
 
         function updateText() {
             fetch(filePath)
@@ -34,12 +45,28 @@
                 .catch(error => console.error('Error fetching the file:', error));
         }
 
+        function updateText2nd() {
+            fetch(filePath2nd)
+                .then(response => response.text())
+                .then(data => {
+                    const lastLine = getLastLine(data);
+                    if (lastLine !== lastContent2nd) {
+                        document.getElementById('dynamicText2nd').innerText = lastLine;
+                        lastContent2nd = lastLine;
+                    }
+                })
+                .catch(error => console.error('Error fetching perf log:', error));
+        }
+
         // Check for updates every 1 second (1000 milliseconds)
         setInterval(updateText, 1000);
+        setInterval(updateText2nd, 1000);
 
         // Initial call to display the text immediately
         updateText();
+        updateText2nd();
     </script>
 
 </body>
+
 </html>
