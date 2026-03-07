@@ -1,8 +1,4 @@
-# VRChat World Logger with Enhanced Execution Policy Check
-# This script continuously monitors the VRChat log file to extract the current world name and instance type.
-# It first checks if the execution policy is set to 'RemoteSigned' to prevent errors.
-
-# Check if the current session is running as Administrator.
+# VRChat World Logger with System Performance Monitor (Real-Time Update)
 # ---------------------------------------------------------------------
 
 # --- Execution Policy Check---
@@ -60,9 +56,9 @@ while ($true) {
             { $_ -gt 400 } { $tailCount = 30000; break }
             { $_ -gt 250 } { $tailCount = 40000; break }
             { $_ -gt 150 } { $tailCount = 50000; break }
-            { $_ -gt 80 }  { $tailCount = 75000; break }
-            { $_ -gt 50 }  { $tailCount = 100000; break }
-            default         { $tailCount = 150000 }
+            { $_ -gt 80 } { $tailCount = 75000; break }
+            { $_ -gt 50 } { $tailCount = 100000; break }
+            default { $tailCount = 150000 }
         }
 
         Write-Host "Reading last $tailCount lines (log size: $fileSizeMB MB)" -ForegroundColor DarkGray
@@ -96,16 +92,16 @@ while ($true) {
             if ($destinationInfo -match 'group\((grp_[a-zA-Z0-9-]+)\)') {
                 $groupId = $matches[1]
 
-                if ($destinationInfo -match 'groupAccessType\(public\)')   { $instanceType = "Group Public" }
-                elseif ($destinationInfo -match 'groupAccessType\(plus\)')  { $instanceType = "Group Plus" }
+                if ($destinationInfo -match 'groupAccessType\(public\)') { $instanceType = "Group Public" }
+                elseif ($destinationInfo -match 'groupAccessType\(plus\)') { $instanceType = "Group Plus" }
                 elseif ($destinationInfo -match 'groupAccessType\(members\)') { $instanceType = "Group Members" }
                 else { $instanceType = "Group" }
             }
             elseif ($destinationInfo -match 'friends\+') { $instanceType = "Friends+" }
-            elseif ($destinationInfo -match '~hidden')   { $instanceType = "Friends+" }
-            elseif ($destinationInfo -match 'friends')   { $instanceType = "Friends" }
-            elseif ($destinationInfo -match 'invite\+')  { $instanceType = "Invite+" }
-            elseif ($destinationInfo -match 'private')   { $instanceType = "Invite" }
+            elseif ($destinationInfo -match '~hidden') { $instanceType = "Friends+" }
+            elseif ($destinationInfo -match 'friends') { $instanceType = "Friends" }
+            elseif ($destinationInfo -match 'invite\+') { $instanceType = "Invite+" }
+            elseif ($destinationInfo -match 'private') { $instanceType = "Invite" }
 
             if ($destinationInfo -match '~ageGate') { $ageGate = " 18+" }
 
@@ -147,8 +143,8 @@ while ($true) {
                 $smiOutput = & nvidia-smi
                 $memLine = $smiOutput | Select-String -Pattern '(\d+)MiB\s*/\s*(\d+)MiB'
                 if ($memLine) {
-                    $vramUsed    = [int]$memLine.Matches[0].Groups[1].Value
-                    $vramTotal   = [int]$memLine.Matches[0].Groups[2].Value
+                    $vramUsed = [int]$memLine.Matches[0].Groups[1].Value
+                    $vramTotal = [int]$memLine.Matches[0].Groups[2].Value
                     $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
                     $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
                 }
@@ -160,12 +156,12 @@ while ($true) {
             else {
                 $gpuInfo = Get-CimInstance -ClassName Win32_VideoController | Select-Object -First 1
                 if ($gpuInfo) {
-                    $vramTotal   = [math]::Round($gpuInfo.AdapterRAM / 1MB, 0)
+                    $vramTotal = [math]::Round($gpuInfo.AdapterRAM / 1MB, 0)
 
                     # Dedicated VRAM used via counter (AMD/Intel support varies)
                     $vramUsedRaw = (Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction SilentlyContinue)
                     if ($vramUsedRaw) {
-                        $vramUsed    = [math]::Round(($vramUsedRaw.CounterSamples | Measure-Object CookedValue -Sum).Sum / 1MB, 0)
+                        $vramUsed = [math]::Round(($vramUsedRaw.CounterSamples | Measure-Object CookedValue -Sum).Sum / 1MB, 0)
                         $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
                         $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
                     }
@@ -186,20 +182,27 @@ while ($true) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $perfLine = "$timestamp | CPU: $cpuPercent% | RAM: $usedMem MB / $([math]::Round($totalMem,0)) MB ($usedPercent%)$gpuMemoryLine"
 
-        # --- Write with retry to avoid file lock conflicts with browser ---
+        # --- Write with retry to avoid file lock / stream conflicts ---
         $maxRetries = 5
         $retryCount = 0
         $written = $false
 
         while (-not $written -and $retryCount -lt $maxRetries) {
             try {
-                Add-Content -Path $perfLogFile -Value $perfLine -ErrorAction Stop
+                [System.IO.File]::AppendAllText($perfLogFile, "$perfLine`r`n")
                 $written = $true
             }
             catch [System.IO.IOException] {
                 $retryCount++
                 Write-Host "File locked, retrying ($retryCount/$maxRetries)..." -ForegroundColor DarkYellow
                 Start-Sleep -Milliseconds 200
+            }
+            catch [System.ArgumentException] {
+                # Stream not readable — file may be corrupt/empty, recreate it
+                Write-Host "Stream error, recreating log file..." -ForegroundColor DarkYellow
+                Remove-Item -Path $perfLogFile -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 100
+                $retryCount++
             }
         }
 
