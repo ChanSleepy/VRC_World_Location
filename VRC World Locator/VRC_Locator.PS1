@@ -5,7 +5,7 @@
 # Check if the current session is running as Administrator.
 # ---------------------------------------------------------------------
 
-# --- Execution Policy Check ---
+# --- Execution Policy Check---
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
 )
@@ -37,43 +37,42 @@ Write-Host "Execution Policy OK. Starting real-time logger..." -ForegroundColor 
 
 # --- Setup Variables ---
 $logDirectory = "$env:USERPROFILE\AppData\LocalLow\VRChat\VRChat"
-$worldOutputFile  = "VRChat_Current_World.txt"
-$checkIntervalSeconds = 2 # New, faster check interval
+$worldOutputFile = "VRChat_Current_World.txt"
+$perfLogFile = "System_Performance_Log.txt"
+$perfCounter = 0
+$checkIntervalSeconds = 2
 
 # --- VRChat Log Monitoring Loop ---
 while ($true) {
 
     # Find the latest log file on every iteration in case VRChat restarts
     $latestLogFile = Get-ChildItem -Path $logDirectory -Filter "output_log_*.txt" |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     if ($latestLogFile) {
 
-        # --- SMART LINE TAILING (INCREASED BUFFER FOR BETTER HISTORY) ---
+        # --- SMART LINE TAILING ---
         $fileSizeMB = [math]::Round((Get-Item $latestLogFile.FullName).Length / 1MB, 1)
 
         switch ($fileSizeMB) {
-            # Increased these counts significantly to cover more history, at the cost of slight speed reduction
             { $_ -gt 800 } { $tailCount = 15000; break }
             { $_ -gt 600 } { $tailCount = 20000; break }
             { $_ -gt 400 } { $tailCount = 30000; break }
             { $_ -gt 250 } { $tailCount = 40000; break }
             { $_ -gt 150 } { $tailCount = 50000; break }
-            { $_ -gt 80  } { $tailCount = 75000; break }
-            { $_ -gt 50  } { $tailCount = 100000; break }
-            default        { $tailCount = 150000 }
+            { $_ -gt 80 }  { $tailCount = 75000; break }
+            { $_ -gt 50 }  { $tailCount = 100000; break }
+            default         { $tailCount = 150000 }
         }
 
-        # Added back debug message to show line count and log size
         Write-Host "Reading last $tailCount lines (log size: $fileSizeMB MB)" -ForegroundColor DarkGray
 
         $logContent = Get-Content -Path $latestLogFile.FullName -Tail $tailCount -ErrorAction SilentlyContinue
 
-        # --- MULTI-PATTERN SEARCH (more reliable) ---
+        # --- MULTI-PATTERN SEARCH ---
         $roomEntry = $logContent | Select-String -Pattern "Joining or Creating Room:" | Select-Object -Last 1
         $destinationEntry = $logContent | Select-String -Pattern "Destination fetching:" | Select-Object -Last 1
 
-        # If "Entering Room:" is used instead (some builds)
         if (-not $roomEntry) {
             $roomEntry = $logContent | Select-String -Pattern "Entering Room:" | Select-Object -Last 1
         }
@@ -98,7 +97,7 @@ while ($true) {
                 $groupId = $matches[1]
 
                 if ($destinationInfo -match 'groupAccessType\(public\)')   { $instanceType = "Group Public" }
-                elseif ($destinationInfo -match 'groupAccessType\(plus\)') { $instanceType = "Group Plus" }
+                elseif ($destinationInfo -match 'groupAccessType\(plus\)')  { $instanceType = "Group Plus" }
                 elseif ($destinationInfo -match 'groupAccessType\(members\)') { $instanceType = "Group Members" }
                 else { $instanceType = "Group" }
             }
@@ -127,6 +126,94 @@ while ($true) {
     }
     else {
         Write-Host "VRChat log file not found. Is VRChat running?" -ForegroundColor Red
+    }
+
+    # --- System Performance Logging (every 1 cycle) ---
+    if ($perfCounter -ge 1) {
+
+        $cpuUsage = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+        $totalMem = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB
+        $freeMem = (Get-Counter '\Memory\Available MBytes').CounterSamples.CookedValue
+        $usedMem = [math]::Round($totalMem - $freeMem, 1)
+        $cpuPercent = [math]::Round($cpuUsage, 1)
+        $usedPercent = [math]::Round(($usedMem / $totalMem) * 100, 1)
+
+        # --- GPU VRAM (Nvidia / AMD / Intel) ---
+        $gpuMemoryLine = ""
+        try {
+            # --- Nvidia ---
+            $nvidiaSmi = Get-Command "nvidia-smi" -ErrorAction SilentlyContinue
+            if ($nvidiaSmi) {
+                $smiOutput = & nvidia-smi
+                $memLine = $smiOutput | Select-String -Pattern '(\d+)MiB\s*/\s*(\d+)MiB'
+                if ($memLine) {
+                    $vramUsed    = [int]$memLine.Matches[0].Groups[1].Value
+                    $vramTotal   = [int]$memLine.Matches[0].Groups[2].Value
+                    $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
+                    $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
+                }
+                else {
+                    $gpuMemoryLine = " | VRAM: parse failed"
+                }
+            }
+            # --- AMD / Intel (via WMI) ---
+            else {
+                $gpuInfo = Get-CimInstance -ClassName Win32_VideoController | Select-Object -First 1
+                if ($gpuInfo) {
+                    $vramTotal   = [math]::Round($gpuInfo.AdapterRAM / 1MB, 0)
+
+                    # Dedicated VRAM used via counter (AMD/Intel support varies)
+                    $vramUsedRaw = (Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction SilentlyContinue)
+                    if ($vramUsedRaw) {
+                        $vramUsed    = [math]::Round(($vramUsedRaw.CounterSamples | Measure-Object CookedValue -Sum).Sum / 1MB, 0)
+                        $vramPercent = [math]::Round(($vramUsed / $vramTotal) * 100, 1)
+                        $gpuMemoryLine = " | VRAM: $vramUsed MB / $vramTotal MB ($vramPercent%)"
+                    }
+                    else {
+                        # Fallback: total VRAM only, usage not available
+                        $gpuMemoryLine = " | VRAM: ? MB / $vramTotal MB (usage N/A)"
+                    }
+                }
+                else {
+                    $gpuMemoryLine = " | VRAM: No GPU detected"
+                }
+            }
+        }
+        catch {
+            $gpuMemoryLine = " | VRAM: ERROR - $($_.Exception.Message)"
+        }
+
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $perfLine = "$timestamp | CPU: $cpuPercent% | RAM: $usedMem MB / $([math]::Round($totalMem,0)) MB ($usedPercent%)$gpuMemoryLine"
+
+        # --- Write with retry to avoid file lock conflicts with browser ---
+        $maxRetries = 5
+        $retryCount = 0
+        $written = $false
+
+        while (-not $written -and $retryCount -lt $maxRetries) {
+            try {
+                Add-Content -Path $perfLogFile -Value $perfLine -ErrorAction Stop
+                $written = $true
+            }
+            catch [System.IO.IOException] {
+                $retryCount++
+                Write-Host "File locked, retrying ($retryCount/$maxRetries)..." -ForegroundColor DarkYellow
+                Start-Sleep -Milliseconds 200
+            }
+        }
+
+        if (-not $written) {
+            Write-Host "WARN: Could not write perf log after $maxRetries retries." -ForegroundColor Red
+        }
+        else {
+            Write-Host "PERF LOGGED: $perfLine" -ForegroundColor Green
+        }
+
+        $perfCounter = 0
+    }
+    else {
+        $perfCounter++
     }
 
     # --- Pause for real-time responsiveness ---
