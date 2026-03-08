@@ -1,4 +1,8 @@
-# VRChat World Logger with System Performance Monitor (Real-Time Update)
+# VRChat World Logger with Enhanced Execution Policy Check
+# This script continuously monitors the VRChat log file to extract the current world name and instance type.
+# It first checks if the execution policy is set to 'RemoteSigned' to prevent errors.
+
+# Check if the current session is running as Administrator.
 # ---------------------------------------------------------------------
 
 # --- Execution Policy Check---
