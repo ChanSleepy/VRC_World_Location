@@ -42,6 +42,17 @@ $perfLogFile = "System_Performance_Log.txt"
 $perfCounter = 0
 $checkIntervalSeconds = 2
 
+# --- Delete corrupt perf log on startup if unreadable ---
+if (Test-Path $perfLogFile) {
+    try {
+        $null = [System.IO.File]::OpenRead($perfLogFile)
+    }
+    catch {
+        Write-Host "Startup: Perf log unreadable, deleting corrupt file..." -ForegroundColor DarkYellow
+        Remove-Item -Path $perfLogFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # --- VRChat Log Monitoring Loop ---
 while ($true) {
 
