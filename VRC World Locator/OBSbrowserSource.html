@@ -22,7 +22,6 @@
     <div id="dynamicText2nd">Loading...</div>
 
     <script>
-        // Replace 'mytextfile.txt' with the actual name of your file.
         const filePath = 'VRChat_Current_World.txt';
         const filePath2nd = 'System_Performance_Log.txt';
         let lastContent = '';
@@ -33,29 +32,37 @@
             return lines[lines.length - 1].trim();
         }
 
+        // Helper function using XMLHttpRequest (works reliably on local file:// protocols in OBS)
+        function readLocalFile(path, callback) {
+            const xhr = new XMLHttpRequest();
+            // Append timestamp to prevent OBS from caching the file read
+            xhr.open('GET', path + '?v=' + new Date().getTime(), true);
+            xhr.onreadystatechange = function () {
+                // status === 0 is valid for successful local file access
+                if (xhr.readyState === 4 && (xhr.status === 200 || xhr.status === 0)) {
+                    callback(xhr.responseText);
+                }
+            };
+            xhr.send();
+        }
+
         function updateText() {
-            fetch(filePath)
-                .then(response => response.text())
-                .then(data => {
-                    if (data !== lastContent) {
-                        document.getElementById('dynamicText').innerText = data;
-                        lastContent = data;
-                    }
-                })
-                .catch(error => console.error('Error fetching the file:', error));
+            readLocalFile(filePath, function (data) {
+                if (data !== lastContent) {
+                    document.getElementById('dynamicText').innerText = data;
+                    lastContent = data;
+                }
+            });
         }
 
         function updateText2nd() {
-            fetch(filePath2nd)
-                .then(response => response.text())
-                .then(data => {
-                    const lastLine = getLastLine(data);
-                    if (lastLine !== lastContent2nd) {
-                        document.getElementById('dynamicText2nd').innerText = lastLine;
-                        lastContent2nd = lastLine;
-                    }
-                })
-                .catch(error => console.error('Error fetching perf log:', error));
+            readLocalFile(filePath2nd, function (data) {
+                const lastLine = getLastLine(data);
+                if (lastLine !== lastContent2nd) {
+                    document.getElementById('dynamicText2nd').innerText = lastLine;
+                    lastContent2nd = lastLine;
+                }
+            });
         }
 
         // Check for updates every 1 second (1000 milliseconds)
